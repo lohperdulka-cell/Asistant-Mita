@@ -17,11 +17,11 @@ PROVIDER_TITLES = {
 
 # (id, название, пометка о лимитах)
 OPENROUTER_MODELS: list[tuple[str, str, str]] = [
-    ("google/gemma-4-31b-it:free", "Gemma 4 31B", "бесплатно"),
-    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B", "бесплатно"),
-    ("deepseek/deepseek-chat-v3-0324:free", "DeepSeek V3", "бесплатно"),
-    ("qwen/qwen-2.5-72b-instruct:free", "Qwen 2.5 72B", "бесплатно"),
-    ("mistralai/mistral-small-3.2-24b-instruct:free", "Mistral Small 3.2", "бесплатно"),
+    ("google/gemma-4-31b-it:free", "Gemma 4 31B", "бесплатно, 262k контекст"),
+    ("google/gemma-4-26b-a4b-it:free", "Gemma 4 26B A4B", "бесплатно, MoE"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "Nemotron 3 Ultra", "бесплатно, 1M контекст"),
+    ("nvidia/nemotron-3.5-lightning:free", "Nemotron 3.5 Lightning", "бесплатно, быстрый"),
+    ("inclusionai/ling-3.2-flash:free", "Ling 3.2 Flash", "бесплатно, 1M контекст"),
     ("openrouter/free", "Авто-роутер", "сам выберет свободную модель"),
 ]
 
