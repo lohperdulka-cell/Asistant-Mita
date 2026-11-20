@@ -21,6 +21,7 @@ from aiogram.types import (
 from config import settings
 from database import Database, features_of
 from llm_client import OFFLINE_NOTE, llm
+from settings_menu import style_prompt
 
 log = logging.getLogger(__name__)
 router = Router(name="inline")
@@ -35,15 +36,14 @@ PRIVATE_HINT = (
 def profile_summary(row) -> str:
     if row is None:
         return ""
-    goal = row["goal"] or ""
-    style = row["style"] or "brief"
-    feats = ", ".join(features_of(row))
+    from onboarding import FEATURE_TITLES, GOAL_TITLES
+
+    feats = ", ".join(FEATURE_TITLES.get(code, code) for code in features_of(row))
     parts = []
-    if goal:
-        parts.append(f"цель пользователя: {goal}")
+    if row["goal"]:
+        parts.append(f"цель пользователя: {GOAL_TITLES.get(row['goal'], row['goal'])}")
     if feats:
         parts.append(f"нужные функции: {feats}")
-    parts.append(f"стиль: {style}")
     return "; ".join(parts)
 
 
@@ -96,7 +96,13 @@ async def inline_handler(query: InlineQuery, db: Database) -> None:
         "их у тебя нет. Дай общий полезный ответ."
     )
 
-    result = await llm.complete(prompt, system=system, style=style, max_tokens=400)
+    result = await llm.complete(
+        prompt,
+        system=system,
+        style=style,
+        max_tokens=400,
+        style_prompt=await style_prompt(db, user_id, style),
+    )
     if result.ok:
         body = result.text
         desc = body.replace("\n", " ")[:110]

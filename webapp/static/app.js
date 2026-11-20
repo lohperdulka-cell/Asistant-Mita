@@ -12,7 +12,7 @@
   ];
 
   const $ = (id) => document.getElementById(id);
-  const state = { profile: null, style: "brief" };
+  const state = { profile: null, style: "brief", screen: "chat" };
 
   if (tg) {
     tg.ready();
@@ -72,6 +72,81 @@
 
   function emptyBlock(text) {
     return `<div class="empty">${escapeHtml(text)}</div>`;
+  }
+
+  /* ---------------- чат ---------------- */
+
+  function renderChat(items) {
+    const log = $("chatLog");
+    if (!items.length) {
+      log.innerHTML = emptyBlock("Пока пусто. Напиши первое сообщение.");
+      return;
+    }
+    log.innerHTML = items.map((item) => `
+      <div class="bubble ${item.role === "user" ? "mine" : "theirs"}">
+        <div class="bubble-text">${escapeHtml(item.content)}</div>
+      </div>`).join("");
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function appendBubble(role, content) {
+    const log = $("chatLog");
+    const empty = log.querySelector(".empty");
+    if (empty) empty.remove();
+    const node = document.createElement("div");
+    node.className = `bubble ${role === "user" ? "mine" : "theirs"}`;
+    node.innerHTML = `<div class="bubble-text">${escapeHtml(content)}</div>`;
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+    return node;
+  }
+
+  function showTyping() {
+    const log = $("chatLog");
+    const node = document.createElement("div");
+    node.className = "bubble theirs typing";
+    node.id = "typingBubble";
+    node.innerHTML = "<span></span><span></span><span></span>";
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+    return node;
+  }
+
+  async function loadChat() {
+    const data = await api("/api/chat?limit=60");
+    renderChat(data.items);
+  }
+
+  async function sendMessage() {
+    const input = $("quickInput");
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    appendBubble("user", text);
+    const typing = showTyping();
+    $("quickAdd").disabled = true;
+    try {
+      const data = await api("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      typing.remove();
+      if (data.ok) {
+        appendBubble("assistant", data.reply.content);
+        if (data.sources && data.sources.length) {
+          const titles = [...new Set(data.sources.map((s) => s.title))];
+          $("chatHint").textContent = `Опора на материалы: ${titles.join(", ")}`;
+        }
+      } else {
+        appendBubble("assistant", `⚠️ ${data.error}`);
+      }
+    } catch (error) {
+      typing.remove();
+      appendBubble("assistant", `⚠️ ${error.message}`);
+    } finally {
+      $("quickAdd").disabled = false;
+      input.focus();
+    }
   }
 
   /* ---------------- экраны ---------------- */
@@ -163,6 +238,7 @@
       return;
     }
     await Promise.all([
+      loadChat().catch((e) => toast(e.message, true)),
       loadNotes().catch((e) => toast(e.message, true)),
       loadReminders().catch((e) => toast(e.message, true)),
       loadMaterials().catch((e) => toast(e.message, true)),
@@ -171,13 +247,32 @@
 
   /* ---------------- события ---------------- */
 
+  const PLACEHOLDERS = {
+    chat: "Написать Мите…",
+    notes: "Новая заметка…",
+    reminders: "Что напомнить и когда…",
+    materials: "Вставь текст материала…",
+    settings: "Написать Мите…",
+  };
+
   function switchScreen(name) {
+    state.screen = name;
     document.querySelectorAll(".tab").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.screen === name);
     });
     document.querySelectorAll(".screen").forEach((screen) => {
       screen.classList.toggle("active", screen.id === `screen-${name}`);
     });
+    const input = $("quickInput");
+    if (input) input.placeholder = PLACEHOLDERS[name] || "Написать Мите…";
+  }
+
+  async function handleQuickSubmit() {
+    if (state.screen === "chat") {
+      await sendMessage();
+      return;
+    }
+    await addQuickNote();
   }
 
   async function addQuickNote() {
@@ -245,9 +340,9 @@
       const tab = event.target.closest(".tab");
       if (tab) switchScreen(tab.dataset.screen);
     });
-    $("quickAdd").addEventListener("click", addQuickNote);
+    $("quickAdd").addEventListener("click", handleQuickSubmit);
     $("quickInput").addEventListener("keydown", (event) => {
-      if (event.key === "Enter") addQuickNote();
+      if (event.key === "Enter") handleQuickSubmit();
     });
     $("refreshBtn").addEventListener("click", () => {
       loadAll().then(() => toast("Обновлено"));

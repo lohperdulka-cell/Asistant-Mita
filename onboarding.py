@@ -19,7 +19,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import settings
-from database import Database, features_of
+from database import Database
 
 log = logging.getLogger(__name__)
 router = Router(name="onboarding")
@@ -144,12 +144,6 @@ def digest_keyboard():
         kb.button(text=value, callback_data=f"ob:digest:{value}")
     kb.adjust(4)
     kb.row(InlineKeyboardButton(text="Своё время", callback_data="ob:digest:manual"))
-    return kb.as_markup()
-
-
-def settings_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Пройти онбординг заново", callback_data="ob:restart")
     return kb.as_markup()
 
 
@@ -391,21 +385,10 @@ async def digest_manual(message: Message, state: FSMContext, db: Database) -> No
 
 @router.message(Command("settings"))
 async def settings_command(message: Message, db: Database) -> None:
-    row = await db.get_user(message.from_user.id)
-    if row is None:
-        await message.answer("Сначала напиши /start.")
-        return
-    feats = features_of(row)
-    await message.answer(
-        "<b>Твой профиль</b>\n\n"
-        f"Цель: {GOAL_TITLES.get(row['goal'] or '', '—')}\n"
-        f"Функции: {', '.join(FEATURE_TITLES.get(f, f) for f in feats) or '—'}\n"
-        f"Стиль: {STYLE_TITLES.get(row['style'] or '', '—')}\n"
-        f"Часовой пояс: {row['timezone']}\n"
-        f"Сводка: {row['digest_time']}\n\n"
-        "Можно пройти онбординг заново.",
-        reply_markup=settings_keyboard(),
-    )
+    from settings_menu import settings_view
+
+    text, markup = await settings_view(db, message.from_user.id)
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "ob:restart")

@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aiogram import Bot, F, Router
-from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.filters import Command, CommandObject, Filter
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import settings
 from database import Database
@@ -139,22 +140,38 @@ async def upload_help(message: Message) -> None:
 
 @router.message(Command("materials"))
 async def materials_list(message: Message, db: Database) -> None:
-    rows = await db.list_materials(message.from_user.id)
+    await send_materials_list(message, db, message.from_user.id)
+
+
+async def send_materials_list(message: Message, db: Database, user_id: int) -> None:
+    rows = await db.list_materials(user_id)
     if not rows:
         await message.answer(
-            "Материалов пока нет.\n"
-            "Пришли документ, ссылку или текст — или смотри /upload."
+            "Материалов пока нет.\n\n"
+            "Нажми 📚 Материалы в меню и пришли текст, файл или ссылку."
         )
         return
     lines = [f"📚 <b>Твои материалы</b> ({len(rows)}):"]
+    kb = InlineKeyboardBuilder()
     for row in rows:
         created = row["created_at"][:10]
         lines.append(
             f"#{row['id']} · {row['title'][:60]}\n"
             f"    {row['kind']}, {row['chars']} симв., {row['chunks']} фрагм., {created}"
         )
-    lines.append("\nУдалить: /forget &lt;id&gt;")
-    await message.answer("\n".join(lines))
+        kb.button(text=f"🗑 #{row['id']}", callback_data=f"mat:del:{row['id']}")
+    kb.adjust(4)
+    lines.append("\nУдалить — кнопкой ниже.")
+    await message.answer("\n".join(lines), reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("mat:del:"))
+async def delete_material_cb(callback: CallbackQuery, db: Database) -> None:
+    material_id = int(callback.data.rsplit(":", 1)[1])
+    ok = await db.delete_material(callback.from_user.id, material_id)
+    await callback.answer("Удалено" if ok else "Не найдено", show_alert=not ok)
+    if ok and callback.message:
+        await send_materials_list(callback.message, db, callback.from_user.id)
 
 
 @router.message(Command("forget"))
@@ -179,12 +196,26 @@ RAG_TRIGGERS = (
 )
 
 
-@router.message(F.text & ~F.text.startswith("/"))
+class IsMaterialRequest(Filter):
+    """Пропускает только ссылки и явные запросы по материалам.
+
+    Обычный текст должен доходить до llm_chat: в aiogram первый совпавший
+    обработчик останавливает цепочку, поэтому широкий фильтр здесь нельзя.
+    """
+
+    async def __call__(self, message: Message) -> bool:
+        text = (message.text or "").strip()
+        if not text or text.startswith("/"):
+            return False
+        if URL_RE.match(text):
+            return True
+        lowered = text.lower()
+        return any(trigger in lowered for trigger in RAG_TRIGGERS)
+
+
+@router.message(IsMaterialRequest())
 async def on_text(message: Message, db: Database) -> None:
     text = (message.text or "").strip()
-    if not text:
-        return
-
     row = await db.get_user(message.from_user.id)
     if row is None:
         await message.answer("Напиши /start, чтобы я тебя настроила.")
@@ -199,27 +230,12 @@ async def on_text(message: Message, db: Database) -> None:
         await ingest_text(message, db, text[:80], "url", text, result.text)
         return
 
-    lowered = text.lower()
-    is_rag_question = any(trigger in lowered for trigger in RAG_TRIGGERS) or lowered.endswith("?")
-
-    if is_rag_question:
-        await message.answer("🔎 Ищу в твоих материалах…")
-        answer, hits, error = await answer_with_context(db, row, text)
-        if hits:
-            titles = sorted({hit.title for hit in hits})
-            answer += "\n\n📎 Источники: " + ", ".join(f"«{t}»" for t in titles[:4])
-        await message.answer(answer)
-        return
-
-    if len(text) >= MIN_TEXT:
-        # длинный текст без вопроса сохраняем сразу — это явное намерение
-        title = text[:50].replace("\n", " ") + "…"
-        await ingest_text(
-            message, db, title, "text", None, text[:MAX_TEXT_MESSAGE]
-        )
-        return
-
-    await free_chat(message, row)
+    await message.answer("🔎 Ищу в твоих материалах…")
+    answer, hits, error = await answer_with_context(db, row, text)
+    if hits:
+        titles = sorted({hit.title for hit in hits})
+        answer += "\n\n📎 Источники: " + ", ".join(f"«{t}»" for t in titles[:4])
+    await message.answer(answer)
 
 
 @router.message(Command("addtext"))
@@ -230,24 +246,6 @@ async def add_text_command(message: Message, command: CommandObject, db: Databas
         return
     title = text[:50].replace("\n", " ") + "…"
     await ingest_text(message, db, title, "text", None, text[:MAX_TEXT_MESSAGE])
-
-
-async def free_chat(message: Message, row) -> None:
-    """Обычный диалог без RAG."""
-    text = (message.text or "").strip()
-    style = row["style"] or "brief"
-    system = "Ты — Мита, личный ассистент в Telegram. Отвечай по делу."
-    if row["goal"]:
-        system += f" Основная цель пользователя: {row['goal']}."
-
-    result = await llm.complete(text, system=system, style=style)
-    if not result.ok:
-        await message.answer(
-            "⚠️ LLM сейчас недоступна (нет ключа или сети).\n"
-            "Пока могу: /note, /remind, /materials, /habits."
-        )
-        return
-    await message.answer(result.text)
 
 
 __all__ = ["router", "store_material", "ingest_text", "engine_hint"]

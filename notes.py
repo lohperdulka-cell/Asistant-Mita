@@ -55,9 +55,15 @@ async def note_add(message: Message, command: CommandObject, db: Database) -> No
 
 @router.message(Command("notes"))
 async def notes_list(message: Message, db: Database) -> None:
-    rows = await db.list_notes(message.from_user.id)
+    await send_notes_list(message, db, message.from_user.id)
+
+
+async def send_notes_list(message: Message, db: Database, user_id: int) -> None:
+    rows = await db.list_notes(user_id)
     if not rows:
-        await message.answer("Открытых заметок нет. Добавь: /note текст")
+        await message.answer(
+            "Открытых заметок нет.\n\nНажми ✍️ Заметки в меню — и просто напиши текст."
+        )
         return
     lines = [f"<b>Заметки</b> ({len(rows)}):"]
     kb = InlineKeyboardBuilder()
@@ -66,7 +72,7 @@ async def notes_list(message: Message, db: Database) -> None:
         lines.append(f"#{row['id']} · {text[:120]}")
         kb.button(text=f"✅ #{row['id']}", callback_data=f"note:done:{row['id']}")
     kb.adjust(3)
-    lines.append("\nЗакрыть: /done &lt;id&gt; или кнопкой ниже.")
+    lines.append("\nЗакрыть — кнопкой ниже.")
     await message.answer("\n".join(lines), reply_markup=kb.as_markup())
 
 

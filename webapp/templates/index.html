@@ -22,19 +22,25 @@
   </header>
 
   <section class="quick">
-    <input id="quickInput" type="text" placeholder="Быстрая заметка…" autocomplete="off" />
-    <button id="quickAdd" class="primary-btn">Добавить</button>
+    <input id="quickInput" type="text" placeholder="Написать Мите…" autocomplete="off" />
+    <button id="quickAdd" class="primary-btn">→</button>
   </section>
 
   <nav class="tabs" id="tabs">
-    <button class="tab active" data-screen="notes">Заметки</button>
+    <button class="tab active" data-screen="chat">Чат</button>
+    <button class="tab" data-screen="notes">Заметки</button>
     <button class="tab" data-screen="reminders">Календарь</button>
     <button class="tab" data-screen="materials">Материалы</button>
     <button class="tab" data-screen="settings">Стиль</button>
   </nav>
 
   <main id="screens">
-    <section class="screen active" id="screen-notes">
+    <section class="screen active" id="screen-chat">
+      <div class="chat-log" id="chatLog"></div>
+      <div class="chat-hint" id="chatHint">Спроси что угодно — отвечу с учётом твоих материалов.</div>
+    </section>
+
+    <section class="screen" id="screen-notes">
       <div class="list" id="notesList"></div>
     </section>
 

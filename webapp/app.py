@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from database import Database, features_of
+from llm_client import llm
 from webapp.auth import (
     InitDataError,
     WebAppUser,
@@ -28,6 +29,7 @@ log = logging.getLogger("mita.webapp")
 
 BASE = Path(__file__).resolve().parent
 STYLES = {"brief", "detailed", "friendly", "formal"}
+HISTORY_DEPTH = 10
 
 
 class NoteIn(BaseModel):
@@ -53,6 +55,10 @@ class HabitIn(BaseModel):
     title: str = Field(min_length=1, max_length=80)
 
 
+class ChatIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
 def create_app(db: Database) -> FastAPI:
     app = FastAPI(title="Мита Mini App", docs_url=None, redoc_url=None)
     app.state.db = db
@@ -67,9 +73,14 @@ def create_app(db: Database) -> FastAPI:
             raise HTTPException(status_code=401, detail="Нет X-Init-Data")
         try:
             data = verify_init_data(x_init_data, settings.bot_token)
-            return user_from_init_data(data)
+            user = user_from_init_data(data)
         except InitDataError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        # Проверка одна на все эндпоинты: иначе заметки и материалы
+        # создавались бы в обход онбординга.
+        if not await db.is_onboarded(user.id):
+            raise HTTPException(status_code=403, detail="Сначала пройди онбординг в боте")
+        return user
 
     UserDep = Annotated[WebAppUser, Depends(current_user)]
 
@@ -241,10 +252,70 @@ def create_app(db: Database) -> FastAPI:
 
     @app.post("/api/style")
     async def set_style(payload: StyleIn, user: UserDep) -> dict[str, Any]:
-        if payload.style not in STYLES:
+        from settings_menu import all_styles
+
+        styles = await all_styles(db, user.id)
+        if payload.style not in styles:
             raise HTTPException(status_code=422, detail="Неизвестный стиль")
         await db.save_profile(user.id, style=payload.style)
-        return {"style": payload.style}
+        return {"style": payload.style, "title": styles[payload.style][0]}
+
+    # ------------------------------------------------------------- чат
+
+    @app.get("/api/chat")
+    async def chat_history(user: UserDep, limit: int = 50) -> dict[str, Any]:
+        rows = await db.chat_history(user.id, limit=max(1, min(limit, 200)))
+        return {
+            "items": [
+                {
+                    "id": row["id"],
+                    "role": row["role"],
+                    "content": row["content"],
+                    "source": row["source"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+        }
+
+    @app.post("/api/chat", status_code=201)
+    async def chat_send(payload: ChatIn, user: UserDep) -> dict[str, Any]:
+        row = await db.get_user(user.id)
+        if row is None:
+            raise HTTPException(status_code=403, detail="Сначала пройди онбординг в боте")
+
+        text = payload.text.strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="Пустое сообщение")
+
+        history_rows = await db.chat_history(user.id, limit=HISTORY_DEPTH)
+        history = [
+            {"role": item["role"], "content": item["content"]}
+            for item in history_rows
+            if item["role"] in {"user", "assistant"}
+        ]
+
+        await db.add_chat_message(user.id, "user", text, "webapp")
+
+        answer, sources = await _answer(db, row, text, history)
+        if answer is None:
+            return {
+                "ok": False,
+                "error": sources,
+                "items": [],
+            }
+
+        await db.add_chat_message(user.id, "assistant", answer, "webapp")
+        return {
+            "ok": True,
+            "reply": {"role": "assistant", "content": answer},
+            "sources": sources,
+        }
+
+    @app.delete("/api/chat")
+    async def chat_clear(user: UserDep) -> dict[str, Any]:
+        removed = await db.clear_chat(user.id)
+        return {"removed": removed}
 
     @app.exception_handler(Exception)
     async def on_error(request: Request, exc: Exception) -> JSONResponse:
@@ -252,6 +323,34 @@ def create_app(db: Database) -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": "Внутренняя ошибка"})
 
     return app
+
+
+async def _answer(
+    db: Database,
+    row: Any,
+    text: str,
+    history: list[dict[str, str]],
+) -> tuple[str | None, Any]:
+    """RAG по материалам, иначе обычный LLM. Возвращает (ответ, источники|ошибка)."""
+    from llm_chat import explain, system_prompt
+    from rag import answer_with_context, search_materials
+
+    hits = await search_materials(db, row["user_id"], text, top_k=4)
+    if hits:
+        # При ошибке LLM answer_with_context сам отдаёт фрагменты как fallback.
+        answer, used, _error = await answer_with_context(db, row, text)
+        return answer, [{"title": hit.title, "id": hit.material_id} for hit in used]
+
+    result = await llm.complete(
+        text,
+        system=await system_prompt(db, row),
+        history=history,
+        provider=row["provider"],
+        model=row["model"],
+    )
+    if not result.ok:
+        return None, explain(result.error)
+    return result.text, []
 
 
 __all__ = ["create_app"]

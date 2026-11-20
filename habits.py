@@ -98,20 +98,26 @@ async def habit_command(message: Message, command: CommandObject, db: Database) 
 
 @router.message(Command("habits"))
 async def habits_list(message: Message, db: Database) -> None:
-    row = await db.get_user(message.from_user.id)
+    await send_habits_list(message, db, message.from_user.id)
+
+
+async def send_habits_list(message: Message, db: Database, user_id: int) -> None:
+    row = await db.get_user(user_id)
     tz = local_tz(row)
     today = today_local(tz)
-    habits = await db.list_habits(message.from_user.id)
+    habits = await db.list_habits(user_id)
     if not habits:
-        await message.answer("Привычек пока нет. Добавь: /habit add зарядка")
+        await message.answer(
+            "Привычек пока нет.\n\nНажми 🔥 Привычки в меню и напиши название."
+        )
         return
 
-    done = await db.habit_done_today(message.from_user.id, today.isoformat())
+    done = await db.habit_done_today(user_id, today.isoformat())
     lines = [f"🔥 <b>Привычки</b> · {today:%d.%m}"]
     kb = InlineKeyboardBuilder()
     for habit in habits:
         since = (today - timedelta(days=60)).isoformat()
-        days = set(await db.habit_days(message.from_user.id, habit["id"], since))
+        days = set(await db.habit_days(user_id, habit["id"], since))
         mark = "✅" if habit["id"] in done else "▫️"
         lines.append(
             f"{mark} #{habit['id']} {habit['title']} — "

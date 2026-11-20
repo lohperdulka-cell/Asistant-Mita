@@ -75,7 +75,10 @@ class LLMClient:
         self.timeout = timeout or settings.llm_timeout
         self._cooldown: dict[str, float] = {}
 
-    def providers(self) -> list[Provider]:
+    def providers(
+        self, prefer: str | None = None, model: str | None = None
+    ) -> list[Provider]:
+        """Цепочка провайдеров. prefer/model сужают её до выбранного в настройках."""
         if self._explicit:
             return [
                 Provider(
@@ -106,10 +109,29 @@ class LLMClient:
                 model=settings.groq_model,
             ),
         }
+
+        # Явный выбор пользователя ставится первым; остальные остаются
+        # как fallback, иначе выбор одной модели ломал бы отказоустойчивость.
+        preferred: Provider | None = None
+        if prefer and prefer in known:
+            preferred = known[prefer]
+            if model:
+                preferred = Provider(
+                    name=preferred.name,
+                    base_url=preferred.base_url,
+                    api_key=preferred.api_key,
+                    model=model,
+                )
+            known = {prefer: preferred, **{k: v for k, v in known.items() if k != prefer}}
+
         order = [part.strip().lower() for part in settings.llm_chain.split(",")]
         chain = [known[name] for name in order if name in known]
         chain.extend(p for name, p in known.items() if name not in order)
-        return [p for p in chain if p.enabled]
+        chain = [p for p in chain if p.enabled]
+        # Порядок из LLM_CHAIN не должен перебивать выбор пользователя.
+        if preferred is not None:
+            chain.sort(key=lambda p: p.name != preferred.name)
+        return chain
 
     @property
     def ready(self) -> bool:
@@ -126,14 +148,21 @@ class LLMClient:
         style: str | None = None,
         history: list[dict[str, str]] | None = None,
         max_tokens: int | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        style_prompt: str | None = None,
     ) -> LLMResult:
-        chain = self.providers()
+        chain = self.providers(prefer=provider, model=model)
         if not chain:
             return LLMResult(text="", ok=False, error="LLM_API_KEY не задан")
 
         messages: list[dict[str, str]] = []
         system_text = system or "Ты — Мита, краткий и полезный личный ассистент."
-        if style and style in STYLE_HINTS:
+        # style_prompt важнее style: он приходит из БД, поэтому работает
+        # и для стилей, созданных пользователем.
+        if style_prompt:
+            system_text = f"{system_text}\n{style_prompt}"
+        elif style and style in STYLE_HINTS:
             system_text = f"{system_text}\n{STYLE_HINTS[style]}"
         messages.append({"role": "system", "content": system_text})
         for item in history or []:

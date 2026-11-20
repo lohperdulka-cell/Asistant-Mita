@@ -191,6 +191,53 @@ async def main():
         assert r.status_code == 403
         print("unonboarded 403 OK")
 
+        # ---- чат Mini App (N3)
+        import llm_client as llm_mod
+
+        def fake_transport(request):
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "Привет из LLM"}}]}
+            )
+
+        real_client = httpx.AsyncClient
+        httpx.AsyncClient = lambda *a, **kw: real_client(
+            *a, transport=httpx.MockTransport(fake_transport), **kw
+        )
+        object.__setattr__(llm_mod.settings, "openrouter_api_key", "test-key")
+        try:
+            r = await client.get("/api/chat", headers=headers_for(101))
+            assert r.status_code == 200 and r.json()["items"] == [], r.text
+            print("chat history empty OK")
+
+            r = await client.post(
+                "/api/chat", headers=headers_for(101), json={"text": "Как дела?"}
+            )
+            assert r.status_code == 201, r.text
+            payload = r.json()
+            assert payload["ok"] is True, payload
+            assert payload["reply"]["content"] == "Привет из LLM"
+            print("chat send OK")
+
+            r = await client.get("/api/chat", headers=headers_for(101))
+            items = r.json()["items"]
+            assert [i["role"] for i in items] == ["user", "assistant"], items
+            assert items[0]["source"] == "webapp"
+            print("chat history persisted OK")
+
+            r = await client.post(
+                "/api/chat", headers=headers_for(101), json={"text": ""}
+            )
+            assert r.status_code == 422, r.status_code
+            print("chat empty rejected OK")
+
+            r = await client.delete("/api/chat", headers=headers_for(101))
+            assert r.json()["removed"] >= 2
+            r = await client.get("/api/chat", headers=headers_for(101))
+            assert r.json()["items"] == []
+            print("chat clear OK")
+        finally:
+            httpx.AsyncClient = real_client
+
     await db.close()
     print("ALL WEBAPP TESTS PASSED")
 

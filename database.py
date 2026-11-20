@@ -17,7 +17,7 @@ import aiosqlite
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -118,7 +118,39 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (user_id, key)
         )
         """,
-    ]
+    ],
+    2: [
+        # История чата Mini App и бота — общая лента на пользователя.
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            role       TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            source     TEXT NOT NULL DEFAULT 'bot',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages(user_id, id)",
+        # Пользовательские стили общения: code уникален в рамках пользователя.
+        """
+        CREATE TABLE IF NOT EXISTS user_styles (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            code       TEXT NOT NULL,
+            title      TEXT NOT NULL,
+            prompt     TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (user_id, code),
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )
+        """,
+        "ALTER TABLE users ADD COLUMN lang TEXT NOT NULL DEFAULT 'ru'",
+        "ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'",
+        "ALTER TABLE users ADD COLUMN provider TEXT",
+        "ALTER TABLE users ADD COLUMN model TEXT",
+    ],
 }
 
 
@@ -167,7 +199,15 @@ class Database:
                 continue
             log.info("Применяю миграцию БД v%s", version)
             for statement in MIGRATIONS[version]:
-                await conn.execute(statement)
+                try:
+                    await conn.execute(statement)
+                except aiosqlite.OperationalError as exc:
+                    # ALTER TABLE ADD COLUMN не идемпотентен: база могла быть
+                    # создана вручную уже с этой колонкой. Остальное — реальная ошибка.
+                    if "duplicate column name" in str(exc).lower():
+                        log.warning("Колонка уже есть, пропускаю: %s", exc)
+                        continue
+                    raise
             await conn.execute(f"PRAGMA user_version={version}")
         await conn.commit()
 
@@ -468,6 +508,104 @@ class Database:
             "SELECT value FROM settings WHERE user_id = ? AND key = ?", (user_id, key)
         )
         return row["value"] if row else default
+
+    # ------------------------------------------------------------------- чат
+
+    async def add_chat_message(
+        self, user_id: int, role: str, content: str, source: str = "bot"
+    ) -> int:
+        message_id = await self.insert(
+            """
+            INSERT INTO chat_messages (user_id, role, content, source, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, role, content.strip(), source, utcnow()),
+        )
+        await self._trim_chat(user_id)
+        return message_id
+
+    async def _trim_chat(self, user_id: int, keep: int = 300) -> None:
+        """Держит историю в разумных рамках: телефон не резиновый."""
+        await self.execute(
+            """
+            DELETE FROM chat_messages
+            WHERE user_id = ? AND id NOT IN (
+                SELECT id FROM chat_messages WHERE user_id = ?
+                ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (user_id, user_id, keep),
+        )
+
+    async def chat_history(self, user_id: int, limit: int = 50) -> list[aiosqlite.Row]:
+        """Последние сообщения в хронологическом порядке (старые сверху)."""
+        rows = await self.fetchall(
+            """
+            SELECT * FROM chat_messages
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+        return list(reversed(rows))
+
+    async def clear_chat(self, user_id: int) -> int:
+        cursor = await self.conn.execute(
+            "DELETE FROM chat_messages WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+        return int(cursor.rowcount or 0)
+
+    # --------------------------------------------------------- стили общения
+
+    async def list_user_styles(self, user_id: int) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT * FROM user_styles WHERE user_id = ? ORDER BY id", (user_id,)
+        )
+
+    async def get_user_style(self, user_id: int, code: str) -> aiosqlite.Row | None:
+        return await self.fetchone(
+            "SELECT * FROM user_styles WHERE user_id = ? AND code = ?", (user_id, code)
+        )
+
+    async def add_user_style(
+        self, user_id: int, code: str, title: str, prompt: str
+    ) -> int | None:
+        try:
+            return await self.insert(
+                """
+                INSERT INTO user_styles (user_id, code, title, prompt, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, code[:40], title[:60], prompt[:2000], utcnow()),
+            )
+        except aiosqlite.IntegrityError:
+            return None
+
+    async def delete_user_style(self, user_id: int, code: str) -> bool:
+        row = await self.get_user_style(user_id, code)
+        if row is None:
+            return False
+        await self.execute(
+            "DELETE FROM user_styles WHERE user_id = ? AND code = ?", (user_id, code)
+        )
+        return True
+
+    # ------------------------------------------------------ настройки профиля
+
+    async def set_user_prefs(self, user_id: int, **fields: Any) -> None:
+        """Обновляет lang / theme / provider / model. Пустая строка = сброс в NULL."""
+        allowed = {"lang", "theme", "provider", "model", "style"}
+        payload = {k: v for k, v in fields.items() if k in allowed}
+        if not payload:
+            return
+        payload = {k: (v or None) for k, v in payload.items()}
+        columns = ", ".join(f"{key} = ?" for key in payload)
+        await self.execute(
+            f"UPDATE users SET {columns}, updated_at = ? WHERE user_id = ?",
+            (*payload.values(), utcnow(), user_id),
+        )
 
     # ------------------------------------------------------------- статистика
 

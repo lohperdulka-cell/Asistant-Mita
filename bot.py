@@ -15,7 +15,13 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeDefault
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeDefault,
+    MenuButtonCommands,
+    MenuButtonWebApp,
+    WebAppInfo,
+)
 
 from config import settings
 from database import Database
@@ -36,6 +42,7 @@ COMMANDS = [
     BotCommand(command="addtext", description="Сохранить текст как материал"),
     BotCommand(command="habit", description="Добавить привычку"),
     BotCommand(command="habits", description="Мои привычки"),
+    BotCommand(command="clear", description="Очистить историю диалога"),
     BotCommand(command="menu", description="Главное меню"),
     BotCommand(command="app", description="Открыть Mini App"),
     BotCommand(command="help", description="Помощь"),
@@ -46,19 +53,27 @@ def build_dispatcher(db: Database) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
     dp["db"] = db
 
+    from flows import router as flows_router
     from habits import router as habits_router
     from inline_mode import router as inline_router
+    from llm_chat import router as chat_router
     from materials import router as materials_router
     from notes import router as notes_router
     from onboarding import router as onboarding_router
+    from settings_menu import router as settings_router
     from webapp_menu import router as menu_router
 
     dp.include_router(onboarding_router)
     dp.include_router(menu_router)
+    dp.include_router(settings_router)
     dp.include_router(notes_router)
     dp.include_router(habits_router)
+    # flows идёт раньше materials: в активном FSM-состоянии текст — это ответ
+    # сценарию, а не запрос по материалам.
+    dp.include_router(flows_router)
     dp.include_router(materials_router)
     dp.include_router(inline_router)
+    dp.include_router(chat_router)
     return dp
 
 
@@ -67,6 +82,27 @@ async def set_commands(bot: Bot) -> None:
         await bot.set_my_commands(COMMANDS, scope=BotCommandScopeDefault())
     except Exception as exc:  # сеть может отвалиться — не критично
         log.warning("Не удалось установить команды: %s", exc)
+
+
+async def set_menu_button(bot: Bot) -> None:
+    """Кнопка меню ведёт в Mini App. Telegram требует https, иначе откат на команды."""
+    url = settings.webapp_base_url
+    if not url.startswith("https://"):
+        log.warning(
+            "WEBAPP_PUBLIC_URL не https (%s) — кнопка меню останется списком команд", url
+        )
+        try:
+            await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        except Exception as exc:
+            log.warning("Не удалось вернуть кнопку команд: %s", exc)
+        return
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="Открыть Миту", web_app=WebAppInfo(url=url + "/"))
+        )
+        log.info("Кнопка меню ведёт в Mini App: %s", url)
+    except Exception as exc:
+        log.warning("Не удалось установить кнопку Mini App: %s", exc)
 
 
 async def main() -> None:
@@ -92,6 +128,7 @@ async def main() -> None:
     )
     dp = build_dispatcher(db)
     await set_commands(bot)
+    await set_menu_button(bot)
 
     try:
         me = await bot.get_me()
