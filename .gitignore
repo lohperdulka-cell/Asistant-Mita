@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Секреты и данные
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+uploads/
+
+# Логи и служебное
+*.log
+.DS_Store
+.agent_tmp/
+.pytest_cache/

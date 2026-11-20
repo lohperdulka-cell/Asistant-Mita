@@ -1,0 +1,10 @@
+# Базовые зависимости «Миты» — лёгкие, ставятся в Termux без root.
+aiogram==3.15.0
+aiosqlite==0.20.0
+APScheduler==3.10.4
+python-dotenv==1.0.1
+fastapi==0.115.5
+uvicorn==0.32.1
+jinja2==3.1.4
+httpx==0.27.2
+python-dateutil==2.9.0.post0
